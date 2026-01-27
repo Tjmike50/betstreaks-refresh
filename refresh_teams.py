@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 import os
 import time
+import random
+import inspect
+import importlib
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
-from datetime import datetime
-import random
 import requests
 from requests.exceptions import ReadTimeout, ConnectionError
 from requests.adapters import HTTPAdapter
@@ -24,8 +27,8 @@ except Exception:
         NBAStatsHTTP = None
         print("Warning: NBAStatsHTTP import failed; continuing without patching nba_api HTTP wrapper.")
 
-# Configure timeout and session similarly to players file
-NBA_TIMEOUT = int(os.environ.get("NBA_TIMEOUT", "60"))
+# Configure timeout and session
+NBA_TIMEOUT = int(os.environ.get("NBA_TIMEOUT", "120"))
 
 _default_headers = {
     "User-Agent": os.environ.get(
@@ -40,13 +43,13 @@ _default_headers = {
     "Connection": "keep-alive",
 }
 
-# Retry strategy (compat for different urllib3 versions)
+# Retry strategy (compat)
 try:
     _retry_strategy = Retry(
         total=5,
         backoff_factor=1,
         status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=frozenset(["HEAD", "GET", "OPTIONS"]),
+        allowed_methods=frozenset(["HEAD", "GET", "OPTIONS", "GET"]),
         raise_on_status=False,
     )
 except TypeError:
@@ -54,7 +57,7 @@ except TypeError:
         total=5,
         backoff_factor=1,
         status_forcelist=[429, 500, 502, 503, 504],
-        method_whitelist=frozenset(["HEAD", "GET", "OPTIONS"]),
+        method_whitelist=frozenset(["HEAD", "GET", "OPTIONS", "GET"]),
         raise_on_status=False,
     )
 
@@ -70,6 +73,27 @@ _proxy = (os.environ.get("NBA_PROXY") or
 if _proxy:
     _session.proxies.update({"http": _proxy, "https": _proxy})
 
+# Monkeypatch nba_api HTTP wrapper to use our session & timeout
+for mod_name in ("nba_api.stats.library.http", "nba_api.library.http"):
+    try:
+        mod = importlib.import_module(mod_name)
+    except Exception:
+        continue
+    try:
+        if hasattr(mod, "NBAStatsHTTP"):
+            try:
+                mod.NBAStatsHTTP.timeout = NBA_TIMEOUT
+            except Exception:
+                pass
+            try:
+                def _get_session_override(self):
+                    return _session
+                mod.NBAStatsHTTP.get_session = _get_session_override
+            except Exception:
+                pass
+    except Exception:
+        print(f"Could not monkeypatch {mod_name}, continuing.")
+
 if NBAStatsHTTP is not None:
     try:
         NBAStatsHTTP.timeout = NBA_TIMEOUT
@@ -83,9 +107,8 @@ if NBAStatsHTTP is not None:
         NBAStatsHTTP.headers.update(_default_headers)
     except Exception:
         pass
-else:
-    print("NBAStatsHTTP not available — configured requests.Session only.")
 
+# App constants
 SEASON = os.environ.get("NBA_SEASON", "2025-26")
 SEASON_TYPE = os.environ.get("NBA_SEASON_TYPE", "Regular Season")
 PTS = [90, 95, 100, 105, 110, 115, 120, 125, 130]
@@ -117,13 +140,57 @@ def _call_with_retry(func, *args, retries=5, base_wait=2, **kwargs):
             time.sleep(wait)
     raise last_err
 
+def _try_leaguegamelog_variants(season, season_type):
+    ctor = leaguegamelog.LeagueGameLog
+    sig = inspect.signature(ctor.__init__)
+    pnames = sig.parameters.keys()
+
+    candidates = []
+
+    kwargs1 = {}
+    if 'season' in pnames:
+        kwargs1['season'] = season
+    if 'season_type_all_star' in pnames:
+        kwargs1['season_type_all_star'] = season_type
+    if kwargs1:
+        candidates.append(kwargs1)
+
+    kwargs2 = {}
+    if 'season_nullable' in pnames:
+        kwargs2['season_nullable'] = season
+    if 'season_type_all_star' in pnames:
+        kwargs2['season_type_all_star'] = season_type
+    if kwargs2:
+        candidates.append(kwargs2)
+
+    kwargs3 = {}
+    if 'season' in pnames:
+        kwargs3['season'] = season
+    if 'season_type_nullable' in pnames:
+        kwargs3['season_type_nullable'] = season_type
+    if kwargs3:
+        candidates.append(kwargs3)
+
+    candidates.append({})
+
+    last_err = None
+    for kw in candidates:
+        try:
+            inst = ctor(**kw)
+            dfs = inst.get_data_frames()
+            if dfs:
+                return dfs[0]
+        except TypeError as e:
+            last_err = e
+            continue
+        except Exception:
+            raise
+
+    raise last_err or RuntimeError("LeagueGameLog invocation failed without exception.")
+
 def get_league_gamelog_with_retry(season, season_type, retries=5):
     def _do():
-        return leaguegamelog.LeagueGameLog(
-            season=season,
-            season_type_all_star=season_type,
-            player_or_team_abbreviation="T"
-        ).get_data_frames()[0]
+        return _try_leaguegamelog_variants(season, season_type)
     return _call_with_retry(_do, retries=retries)
 
 def main():
