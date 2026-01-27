@@ -3,7 +3,17 @@ from datetime import datetime, timezone
 from supabase import create_client
 from nba_api.stats.endpoints import playergamelogs
 from nba_api.stats.static import players
+import time
+import random
+from requests.exceptions import ReadTimeout, ConnectionError
+from nba_api.stats.library.http import NBAStatsHTTP
 
+NBAStatsHTTP.headers.update({
+    "User-Agent": "Mozilla/5.0",
+    "Referer": "https://www.nba.com/",
+    "Origin": "https://www.nba.com",
+    "Accept-Language": "en-US,en;q=0.9",
+})
 SEASON="2025-26"; SEASON_TYPE="Regular Season"
 RECENT_DAYS=14; MIN_STREAK=2; LOOKBACK=12
 STATS={"PTS":"PTS","AST":"AST","REB":"REB","3PM":"FG3M"}
