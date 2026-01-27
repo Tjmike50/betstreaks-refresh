@@ -6,8 +6,10 @@ import pandas as pd
 from datetime import datetime
 import random
 import requests
+from requests.exceptions import ReadTimeout, ConnectionError
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
+
 from supabase import create_client
 from nba_api.stats.endpoints import leaguegamelog
 
@@ -26,9 +28,11 @@ except Exception:
 NBA_TIMEOUT = int(os.environ.get("NBA_TIMEOUT", "60"))
 
 _default_headers = {
-    "User-Agent": os.environ.get("NBA_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                                 "Chrome/121.0.0.0 Safari/537.36"),
+    "User-Agent": os.environ.get(
+        "NBA_USER_AGENT",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/121.0.0.0 Safari/537.36"
+    ),
     "Referer": "https://www.nba.com/",
     "Origin": "https://www.nba.com",
     "Accept-Language": "en-US,en;q=0.9",
@@ -106,7 +110,7 @@ def _call_with_retry(func, *args, retries=5, base_wait=2, **kwargs):
         try:
             time.sleep(0.5)
             return func(*args, **kwargs)
-        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as e:
+        except (ReadTimeout, ConnectionError) as e:
             last_err = e
             wait = base_wait * (2 ** (attempt - 1)) + random.uniform(0, 1.5)
             print(f"NBA request error: {e!r} — retry {attempt}/{retries} after {wait:.1f}s")
@@ -115,8 +119,11 @@ def _call_with_retry(func, *args, retries=5, base_wait=2, **kwargs):
 
 def get_league_gamelog_with_retry(season, season_type, retries=5):
     def _do():
-        return leaguegamelog.LeagueGameLog(season=season, season_type_all_star=season_type,
-                                           player_or_team_abbreviation="T").get_data_frames()[0]
+        return leaguegamelog.LeagueGameLog(
+            season=season,
+            season_type_all_star=season_type,
+            player_or_team_abbreviation="T"
+        ).get_data_frames()[0]
     return _call_with_retry(_do, retries=retries)
 
 def main():
@@ -159,22 +166,20 @@ def main():
                     "streak_start": str(g.loc[so - 1, "GAME_DATE"].date()), "last_game": last,
                     "season_wins": w, "season_games": games, "season_win_pct": round((w / games) * 100, 3) if games else 0.0,
                     "streak_win_pct": 100.0, "last10_hits": a10, "last10_games": b10, "last10_hit_pct": c10,
-                    "last5_hits": a5, "last5_games": b5,
-                    "last5_hit_pct": c5, "updated_at": now
+                    "last5_hits": a5, "last5_games": b5, "last5_hit_pct": c5, "updated_at": now
                 })
 
-        su = alen(-pts, -t)  # <= t
-        if su >= 2:
-            w = int((pts <= t).sum()); a10, b10, c10 = last_le(pts, t, 10); a5, b5, c5 = last_le(pts, t, 5)
-            rows.append({
-                "sport": "NBA", "entity_type": "team", "player_id": int(tid), "player_name": abbr,
-                "team_abbr": abbr, "stat": "PTS_U", "threshold": int(t), "streak_len": int(su),
-                "streak_start": str(g.loc[su - 1, "GAME_DATE"].date()), "last_game": last,
-                "season_wins": w, "season_games": games, "season_win_pct": round((w / games) * 100, 3) if games else 0.0,
-                "streak_win_pct": 100.0, "last10_hits": a10, "last10_games": b10, "last10_hit_pct": c10,
-                "last5_hits": a5, "last5_games": b5,
-                "last5_hit_pct": c5, "updated_at": now
-            })
+            su = alen(-pts, -t)  # <= t
+            if su >= 2:
+                w = int((pts <= t).sum()); a10, b10, c10 = last_le(pts, t, 10); a5, b5, c5 = last_le(pts, t, 5)
+                rows.append({
+                    "sport": "NBA", "entity_type": "team", "player_id": int(tid), "player_name": abbr,
+                    "team_abbr": abbr, "stat": "PTS_U", "threshold": int(t), "streak_len": int(su),
+                    "streak_start": str(g.loc[su - 1, "GAME_DATE"].date()), "last_game": last,
+                    "season_wins": w, "season_games": games, "season_win_pct": round((w / games) * 100, 3) if games else 0.0,
+                    "streak_win_pct": 100.0, "last10_hits": a10, "last10_games": b10, "last10_hit_pct": c10,
+                    "last5_hits": a5, "last5_games": b5, "last5_hit_pct": c5, "updated_at": now
+                })
 
     sb.table("streaks").delete().eq("sport", "NBA").eq("entity_type", "team").execute()
     for i in range(0, len(rows), 500):
