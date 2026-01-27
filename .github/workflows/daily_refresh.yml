@@ -1,25 +1,21 @@
 name: Daily Refresh
-
 on:
   schedule:
     - cron: "0 13 * * *"
   workflow_dispatch: {}
-
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+        with: { python-version: "3.11" }
       - run: pip install -r requirements.txt
-      -      - name: Refresh Players
+      - name: Refresh Players
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python refresh_players.py
-
       - name: Refresh Teams
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
