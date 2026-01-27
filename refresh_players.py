@@ -18,25 +18,23 @@ from nba_api.stats.static import players
 # Robustly import NBAStatsHTTP from possible locations
 NBAStatsHTTP = None
 try:
-    # new/commonly used path
     from nba_api.stats.library.http import NBAStatsHTTP
 except Exception:
     try:
-        # older/different path
         from nba_api.library.http import NBAStatsHTTP
     except Exception:
         NBAStatsHTTP = None
         print("Warning: NBAStatsHTTP import failed; continuing without patching nba_api HTTP wrapper.")
 
 # --- NBA HTTP/session configuration (robust but small changes)
-# Configure sensible timeout and headers; allow override via env vars
 NBA_TIMEOUT = int(os.environ.get("NBA_TIMEOUT", "60"))  # seconds
 
-# Default headers that mimic a modern browser (helps avoid simple bot blocking)
 _default_headers = {
-    "User-Agent": os.environ.get("NBA_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                                 "Chrome/121.0.0.0 Safari/537.36"),
+    "User-Agent": os.environ.get(
+        "NBA_USER_AGENT",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/121.0.0.0 Safari/537.36"
+    ),
     "Referer": "https://www.nba.com/",
     "Origin": "https://www.nba.com",
     "Accept-Language": "en-US,en;q=0.9",
@@ -44,8 +42,7 @@ _default_headers = {
     "Connection": "keep-alive",
 }
 
-# Build a requests.Session with retries/backoff and optional proxy support
-# Compatibility: some urllib3 versions use method_whitelist vs allowed_methods
+# Retry strategy (compat for different urllib3 versions)
 try:
     _retry_strategy = Retry(
         total=5,
@@ -67,24 +64,24 @@ _adapter = HTTPAdapter(max_retries=_retry_strategy)
 _session = requests.Session()
 _session.mount("https://", _adapter)
 _session.mount("http://", _adapter)
-
-# Merge default headers into session headers (can be augmented via NBA_EXTRA_HEADERS env var)
 _session.headers.update(_default_headers)
-extra = os.environ.get("NBA_EXTRA_HEADERS")  # optional: "X-Foo:bar|X-Bar:baz"
-if extra:
-    for pair in extra.split("|"):
+
+# Allow optional extra headers via env var NBA_EXTRA_HEADERS, format: "X-Foo:bar|X-Bar:baz"
+_extra = os.environ.get("NBA_EXTRA_HEADERS")
+if _extra:
+    for pair in _extra.split("|"):
         if ":" in pair:
             k, v = pair.split(":", 1)
             _session.headers[k.strip()] = v.strip()
 
-# Optional proxy env var (allows GitHub Actions to use a proxy)
+# Optional proxy env var
 _proxy = (os.environ.get("NBA_PROXY") or
           os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or
           os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"))
 if _proxy:
     _session.proxies.update({"http": _proxy, "https": _proxy})
 
-# Apply the session to nba_api HTTP wrapper if available
+# Apply to nba_api wrapper if present
 if NBAStatsHTTP is not None:
     try:
         NBAStatsHTTP.timeout = NBA_TIMEOUT
@@ -95,7 +92,6 @@ if NBAStatsHTTP is not None:
     except Exception:
         pass
     try:
-        # some versions expose headers dict
         NBAStatsHTTP.headers.update(_default_headers)
     except Exception:
         pass
@@ -115,33 +111,27 @@ def alen(v, t):
     m = v < t
     return int(m.argmax()) if m.any() else int(len(v))
 
-
 def last_ge(v, t, n):
     n = min(n, len(v))
     x = v[:n]
     h = int((x >= t).sum())
     return h, n, round((h / n) * 100, 3) if n else 0.0
 
-
 def _call_with_retry(func, *args, retries=5, base_wait=2, **kwargs):
     """Call func with retries, exponential backoff and jitter on ReadTimeout/ConnectionError."""
     last_err = None
     for attempt in range(1, retries + 1):
         try:
-            # small pacing to avoid burst requests from CI
-            time.sleep(0.5)
+            time.sleep(0.5)  # pacing
             return func(*args, **kwargs)
         except (ReadTimeout, ConnectionError) as e:
             last_err = e
             wait = base_wait * (2 ** (attempt - 1)) + random.uniform(0, 1.5)
             print(f"NBA request error: {e!r} — retry {attempt}/{retries} after {wait:.1f}s")
             time.sleep(wait)
-    # if we exit loop without success, raise the last error
     raise last_err
 
-
 def get_logs_with_retry(season, season_type, retries=5):
-    """Get league/player game logs via playergamelogs.PlayerGameLogs with retries."""
     def _do():
         return playergamelogs.PlayerGameLogs(
             season=season,
@@ -149,20 +139,16 @@ def get_logs_with_retry(season, season_type, retries=5):
         ).get_data_frames()[0]
     return _call_with_retry(_do, retries=retries)
 
-
 def get_player_gamelogs_with_retry(player_id, retries=5):
-    """If you ever need per-player calls, do them through this wrapper (not used by default)."""
     from nba_api.stats.endpoints import playergamelogs as _pg
     def _do():
         return _pg.PlayerGameLogs(player_id_nullable=player_id).get_data_frames()[0]
     return _call_with_retry(_do, retries=retries)
 
-
-# --- Main logic (kept largely as original)
+# --- Main logic
 def main():
     sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
 
-    # The repository previously attempted to call some "get_logs_with_retry" but had typos.
     lg = get_logs_with_retry(SEASON, SEASON_TYPE)
     lg["GAME_DATE"] = pd.to_datetime(lg["GAME_DATE"])
 
@@ -205,12 +191,10 @@ def main():
 
     df = pd.DataFrame(res)
     rows = df.to_dict("records")
-    # batch insert to Supabase in chunks (existing logic)
     sb.table("streaks").delete().eq("sport", "NBA").eq("entity_type", "player").execute()
     for i in range(0, len(rows), 500):
         sb.table("streaks").insert(rows[i:i + 500]).execute()
     print("Players uploaded:", len(rows))
-
 
 if __name__ == "__main__":
     main()
