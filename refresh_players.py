@@ -3,6 +3,7 @@ import os
 import time
 import random
 import inspect
+import importlib
 from datetime import datetime, timezone
 
 import numpy as np
@@ -28,7 +29,7 @@ except Exception:
         print("Warning: NBAStatsHTTP import failed; continuing without patching nba_api HTTP wrapper.")
 
 # --- NBA HTTP/session configuration (robust but small changes)
-NBA_TIMEOUT = int(os.environ.get("NBA_TIMEOUT", "60"))  # seconds
+NBA_TIMEOUT = int(os.environ.get("NBA_TIMEOUT", "120"))  # seconds (default raised)
 
 _default_headers = {
     "User-Agent": os.environ.get(
@@ -49,7 +50,7 @@ try:
         total=5,
         backoff_factor=1,
         status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=frozenset(["HEAD", "GET", "OPTIONS"]),
+        allowed_methods=frozenset(["HEAD", "GET", "OPTIONS", "GET"]),
         raise_on_status=False,
     )
 except TypeError:
@@ -57,7 +58,7 @@ except TypeError:
         total=5,
         backoff_factor=1,
         status_forcelist=[429, 500, 502, 503, 504],
-        method_whitelist=frozenset(["HEAD", "GET", "OPTIONS"]),
+        method_whitelist=frozenset(["HEAD", "GET", "OPTIONS", "GET"]),
         raise_on_status=False,
     )
 
@@ -82,7 +83,29 @@ _proxy = (os.environ.get("NBA_PROXY") or
 if _proxy:
     _session.proxies.update({"http": _proxy, "https": _proxy})
 
-# Apply to nba_api wrapper if present
+# Monkeypatch nba_api HTTP wrapper to return our session and timeout (best-effort)
+for mod_name in ("nba_api.stats.library.http", "nba_api.library.http"):
+    try:
+        mod = importlib.import_module(mod_name)
+    except Exception:
+        continue
+    try:
+        if hasattr(mod, "NBAStatsHTTP"):
+            try:
+                mod.NBAStatsHTTP.timeout = NBA_TIMEOUT
+            except Exception:
+                pass
+            try:
+                def _get_session_override(self):
+                    return _session
+                mod.NBAStatsHTTP.get_session = _get_session_override
+            except Exception:
+                pass
+    except Exception:
+        # don't fail if monkeypatching is not possible
+        print(f"Could not monkeypatch {mod_name}, continuing.")
+
+# Also try to set properties on NBAStatsHTTP if available (guarded)
 if NBAStatsHTTP is not None:
     try:
         NBAStatsHTTP.timeout = NBA_TIMEOUT
@@ -96,8 +119,6 @@ if NBAStatsHTTP is not None:
         NBAStatsHTTP.headers.update(_default_headers)
     except Exception:
         pass
-else:
-    print("NBAStatsHTTP not available — configured requests.Session only.")
 
 # --- App constants
 SEASON = os.environ.get("NBA_SEASON", "2025-26")
@@ -123,7 +144,7 @@ def _call_with_retry(func, *args, retries=5, base_wait=2, **kwargs):
     last_err = None
     for attempt in range(1, retries + 1):
         try:
-            time.sleep(0.5)  # pacing
+            time.sleep(0.5)  # pacing to avoid bursts
             return func(*args, **kwargs)
         except (ReadTimeout, ConnectionError) as e:
             last_err = e
@@ -141,10 +162,10 @@ def _try_playergamelogs_variants(season, season_type):
     sig = inspect.signature(ctor.__init__)
     pnames = sig.parameters.keys()
 
-    # Build candidate kwargs dynamically
+    # Candidate kwargs list (ordered by common usage)
     candidates = []
 
-    # Candidate 1: common older usage
+    # Common older usage
     kwargs1 = {}
     if 'season' in pnames:
         kwargs1['season'] = season
@@ -153,7 +174,7 @@ def _try_playergamelogs_variants(season, season_type):
     if kwargs1:
         candidates.append(kwargs1)
 
-    # Candidate 2: alternative names
+    # Alternative: season_nullable, season_type_nullable
     kwargs2 = {}
     if 'season_nullable' in pnames:
         kwargs2['season_nullable'] = season
@@ -162,7 +183,7 @@ def _try_playergamelogs_variants(season, season_type):
     if kwargs2:
         candidates.append(kwargs2)
 
-    # Candidate 3: season + different season_type name
+    # season + season_type_all_star or season_type
     kwargs3 = {}
     if 'season' in pnames:
         kwargs3['season'] = season
@@ -173,7 +194,7 @@ def _try_playergamelogs_variants(season, season_type):
     if kwargs3:
         candidates.append(kwargs3)
 
-    # Candidate 4: season_nullable + season_type_all_star
+    # season_nullable + season_type_all_star
     kwargs4 = {}
     if 'season_nullable' in pnames:
         kwargs4['season_nullable'] = season
@@ -182,30 +203,26 @@ def _try_playergamelogs_variants(season, season_type):
     if kwargs4:
         candidates.append(kwargs4)
 
-    # Candidate 5: no kwargs (let the library decide defaults) — last resort
+    # Last-resort: no kwargs (library defaults)
     candidates.append({})
 
     last_err = None
     for kw in candidates:
         try:
-            # construct and return dataframe if successful
             inst = ctor(**kw)
             dfs = inst.get_data_frames()
             if dfs:
                 return dfs[0]
         except TypeError as e:
             last_err = e
-            # try next candidate
             continue
-        except Exception as e:
-            # non-TypeErrors may be transient (network), raise to trigger retry wrapper
+        except Exception:
+            # network or other errors should surface to caller (they will be retried by wrapper)
             raise
 
-    # If none of the candidates worked, raise the last TypeError for visibility
     raise last_err or RuntimeError("PlayerGameLogs invocation failed without exception.")
 
 def get_logs_with_retry(season, season_type, retries=5):
-    """Get player game logs with retries and signature compatibility."""
     def _do():
         return _try_playergamelogs_variants(season, season_type)
     return _call_with_retry(_do, retries=retries)
@@ -213,7 +230,6 @@ def get_logs_with_retry(season, season_type, retries=5):
 def get_player_gamelogs_with_retry(player_id, retries=5):
     from nba_api.stats.endpoints import playergamelogs as _pg
     def _do():
-        # Try a couple of common parameter names for a per-player call
         sig = inspect.signature(_pg.PlayerGameLogs.__init__)
         pnames = sig.parameters.keys()
         kwargs = {}
@@ -221,7 +237,6 @@ def get_player_gamelogs_with_retry(player_id, retries=5):
             kwargs['player_id_nullable'] = player_id
         elif 'player_id' in pnames:
             kwargs['player_id'] = player_id
-        # Try season args too if available (best-effort)
         if 'season_nullable' in pnames:
             kwargs['season_nullable'] = SEASON
         elif 'season' in pnames:
