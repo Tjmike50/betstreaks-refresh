@@ -17,7 +17,11 @@ def last_ge(v,t,n):
 
 def main():
   sb=create_client(os.environ["SUPABASE_URL"],os.environ["SUPABASE_SERVICE_ROLE_KEY"])
-  lg=playergamelogs.PlayerGameLogs(season=SEASON,season_type_nullable=SEASON_TYPE).get_data_frames()[0]
+  lg = playergamelogs.PlayerGameLogs(
+    season_nullable=SEASON,
+    season_type_nullable=SEASON_TYPE
+).get_data_frames()[0]
+
   lg["GAME_DATE"]=pd.to_datetime(lg["GAME_DATE"])
   act={p["id"] for p in players.get_players() if p["is_active"]}
   lg=lg[lg["PLAYER_ID"].isin(act)].copy()
