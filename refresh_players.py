@@ -24,7 +24,18 @@ def alen(v,t):
 def last_ge(v,t,n):
   n=min(n,len(v)); x=v[:n]; h=int((x>=t).sum())
   return h,n, round((h/n)*100,3) if n else 0.0
-
+def get_player_gamelogs_with_retry(SEASON, SEASON_TYPE):
+    last_err = None
+    for attempt in range(1, 6):
+        try:
+           df = get_player_gamelogs_with_retry(SEASON, SEASON_TYPE)
+        except (ReadTimeout, ConnectionError) as e:
+            last_err = e
+            wait = 5 * attempt + random.randint(0, 3)
+            print(f"NBA timeout, retry {attempt}/5 in {wait}s...")
+            time.sleep(wait)
+    raise last_err#
+    
 def main():
   sb=create_client(os.environ["SUPABASE_URL"],os.environ["SUPABASE_SERVICE_ROLE_KEY"])
   lg = playergamelogs.PlayerGameLogs(
