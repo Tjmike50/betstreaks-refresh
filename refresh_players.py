@@ -2,6 +2,7 @@
 import os
 import time
 import random
+import inspect
 from datetime import datetime, timezone
 
 import numpy as np
@@ -131,18 +132,101 @@ def _call_with_retry(func, *args, retries=5, base_wait=2, **kwargs):
             time.sleep(wait)
     raise last_err
 
+def _try_playergamelogs_variants(season, season_type):
+    """
+    Try calling PlayerGameLogs with several keyword argument variants based on the
+    installed nba_api implementation. Use inspect to detect constructor parameters.
+    """
+    ctor = playergamelogs.PlayerGameLogs
+    sig = inspect.signature(ctor.__init__)
+    pnames = sig.parameters.keys()
+
+    # Build candidate kwargs dynamically
+    candidates = []
+
+    # Candidate 1: common older usage
+    kwargs1 = {}
+    if 'season' in pnames:
+        kwargs1['season'] = season
+    if 'season_type_nullable' in pnames:
+        kwargs1['season_type_nullable'] = season_type
+    if kwargs1:
+        candidates.append(kwargs1)
+
+    # Candidate 2: alternative names
+    kwargs2 = {}
+    if 'season_nullable' in pnames:
+        kwargs2['season_nullable'] = season
+    if 'season_type_nullable' in pnames:
+        kwargs2['season_type_nullable'] = season_type
+    if kwargs2:
+        candidates.append(kwargs2)
+
+    # Candidate 3: season + different season_type name
+    kwargs3 = {}
+    if 'season' in pnames:
+        kwargs3['season'] = season
+    if 'season_type_all_star' in pnames:
+        kwargs3['season_type_all_star'] = season_type
+    if 'season_type' in pnames:
+        kwargs3['season_type'] = season_type
+    if kwargs3:
+        candidates.append(kwargs3)
+
+    # Candidate 4: season_nullable + season_type_all_star
+    kwargs4 = {}
+    if 'season_nullable' in pnames:
+        kwargs4['season_nullable'] = season
+    if 'season_type_all_star' in pnames:
+        kwargs4['season_type_all_star'] = season_type
+    if kwargs4:
+        candidates.append(kwargs4)
+
+    # Candidate 5: no kwargs (let the library decide defaults) — last resort
+    candidates.append({})
+
+    last_err = None
+    for kw in candidates:
+        try:
+            # construct and return dataframe if successful
+            inst = ctor(**kw)
+            dfs = inst.get_data_frames()
+            if dfs:
+                return dfs[0]
+        except TypeError as e:
+            last_err = e
+            # try next candidate
+            continue
+        except Exception as e:
+            # non-TypeErrors may be transient (network), raise to trigger retry wrapper
+            raise
+
+    # If none of the candidates worked, raise the last TypeError for visibility
+    raise last_err or RuntimeError("PlayerGameLogs invocation failed without exception.")
+
 def get_logs_with_retry(season, season_type, retries=5):
+    """Get player game logs with retries and signature compatibility."""
     def _do():
-        return playergamelogs.PlayerGameLogs(
-            season=season,
-            season_type_nullable=season_type
-        ).get_data_frames()[0]
+        return _try_playergamelogs_variants(season, season_type)
     return _call_with_retry(_do, retries=retries)
 
 def get_player_gamelogs_with_retry(player_id, retries=5):
     from nba_api.stats.endpoints import playergamelogs as _pg
     def _do():
-        return _pg.PlayerGameLogs(player_id_nullable=player_id).get_data_frames()[0]
+        # Try a couple of common parameter names for a per-player call
+        sig = inspect.signature(_pg.PlayerGameLogs.__init__)
+        pnames = sig.parameters.keys()
+        kwargs = {}
+        if 'player_id_nullable' in pnames:
+            kwargs['player_id_nullable'] = player_id
+        elif 'player_id' in pnames:
+            kwargs['player_id'] = player_id
+        # Try season args too if available (best-effort)
+        if 'season_nullable' in pnames:
+            kwargs['season_nullable'] = SEASON
+        elif 'season' in pnames:
+            kwargs['season'] = SEASON
+        return _pg.PlayerGameLogs(**kwargs).get_data_frames()[0]
     return _call_with_retry(_do, retries=retries)
 
 # --- Main logic
