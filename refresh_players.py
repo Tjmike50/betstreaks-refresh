@@ -1,4 +1,6 @@
 import os, numpy as np, pandas as pd
+import time
+from nba_api.library.http import NBAStatsHTTP
 from datetime import datetime, timezone
 from supabase import create_client
 from nba_api.stats.endpoints import playergamelogs
@@ -8,6 +10,7 @@ import random
 from requests.exceptions import ReadTimeout, ConnectionError
 from nba_api.stats.library.http import NBAStatsHTTP
 
+NBAStatsHTTP.timeout = 120=
 NBAStatsHTTP.headers.update({
     "User-Agent": "Mozilla/5.0",
     "Referer": "https://www.nba.com/",
@@ -38,10 +41,18 @@ def get_player_gamelogs_with_retry(SEASON, SEASON_TYPE):
     
 def main():
   sb=create_client(os.environ["SUPABASE_URL"],os.environ["SUPABASE_SERVICE_ROLE_KEY"])
-  lg = playergamelogs.PlayerGameLogs(
-    season_nullable=SEASON,
-    season_type_nullable=SEASON_TYPE
-).get_data_frames()[0]
+  lg =def get_logs_with_retry(SEASON, SEASON_TYPE, retries=5):
+    for attempt in range(1, retries + 1):
+        try:
+            time.sleep(1.5)  # slow down so NBA doesn't rate-limit
+            return playergamelogs.PlayerGameLogs(
+                season=SEASON,
+                season_type_nullable=SEASON_TYPE
+            ).get_data_frames()[0]
+        except Exception as e:
+            if attempt == retries:
+                raise
+            time.sleep(5 * attempt)  # backoff
 
   lg["GAME_DATE"]=pd.to_datetime(lg["GAME_DATE"])
   act={p["id"] for p in players.get_players() if p["is_active"]}
