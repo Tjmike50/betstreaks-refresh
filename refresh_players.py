@@ -14,11 +14,23 @@ from urllib3.util import Retry
 from supabase import create_client
 from nba_api.stats.endpoints import playergamelogs
 from nba_api.stats.static import players
-from nba_api.library.http import NBAStatsHTTP
+
+# Robustly import NBAStatsHTTP from possible locations
+NBAStatsHTTP = None
+try:
+    # new/commonly used path
+    from nba_api.stats.library.http import NBAStatsHTTP
+except Exception:
+    try:
+        # older/different path
+        from nba_api.library.http import NBAStatsHTTP
+    except Exception:
+        NBAStatsHTTP = None
+        print("Warning: NBAStatsHTTP import failed; continuing without patching nba_api HTTP wrapper.")
 
 # --- NBA HTTP/session configuration (robust but small changes)
 # Configure sensible timeout and headers; allow override via env vars
-NBAStatsHTTP.timeout = int(os.environ.get("NBA_TIMEOUT", "60"))  # seconds
+NBA_TIMEOUT = int(os.environ.get("NBA_TIMEOUT", "60"))  # seconds
 
 # Default headers that mimic a modern browser (helps avoid simple bot blocking)
 _default_headers = {
@@ -33,13 +45,23 @@ _default_headers = {
 }
 
 # Build a requests.Session with retries/backoff and optional proxy support
-_retry_strategy = Retry(
-    total=5,
-    backoff_factor=1,  # base backoff; we also add jitter in our wrapper
-    status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=frozenset(["HEAD", "GET", "OPTIONS"]),
-    raise_on_status=False,
-)
+# Compatibility: some urllib3 versions use method_whitelist vs allowed_methods
+try:
+    _retry_strategy = Retry(
+        total=5,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=frozenset(["HEAD", "GET", "OPTIONS"]),
+        raise_on_status=False,
+    )
+except TypeError:
+    _retry_strategy = Retry(
+        total=5,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        method_whitelist=frozenset(["HEAD", "GET", "OPTIONS"]),
+        raise_on_status=False,
+    )
 
 _adapter = HTTPAdapter(max_retries=_retry_strategy)
 _session = requests.Session()
@@ -62,10 +84,23 @@ _proxy = (os.environ.get("NBA_PROXY") or
 if _proxy:
     _session.proxies.update({"http": _proxy, "https": _proxy})
 
-# Apply the session to nba_api HTTP wrapper
-# nba_api expects NBAStatsHTTP.session and NBAStatsHTTP.headers / timeout to exist
-NBAStatsHTTP.session = _session
-NBAStatsHTTP.headers.update(_default_headers)
+# Apply the session to nba_api HTTP wrapper if available
+if NBAStatsHTTP is not None:
+    try:
+        NBAStatsHTTP.timeout = NBA_TIMEOUT
+    except Exception:
+        pass
+    try:
+        NBAStatsHTTP.session = _session
+    except Exception:
+        pass
+    try:
+        # some versions expose headers dict
+        NBAStatsHTTP.headers.update(_default_headers)
+    except Exception:
+        pass
+else:
+    print("NBAStatsHTTP not available — configured requests.Session only.")
 
 # --- App constants
 SEASON = os.environ.get("NBA_SEASON", "2025-26")
@@ -80,11 +115,13 @@ def alen(v, t):
     m = v < t
     return int(m.argmax()) if m.any() else int(len(v))
 
+
 def last_ge(v, t, n):
     n = min(n, len(v))
     x = v[:n]
     h = int((x >= t).sum())
     return h, n, round((h / n) * 100, 3) if n else 0.0
+
 
 def _call_with_retry(func, *args, retries=5, base_wait=2, **kwargs):
     """Call func with retries, exponential backoff and jitter on ReadTimeout/ConnectionError."""
@@ -102,6 +139,7 @@ def _call_with_retry(func, *args, retries=5, base_wait=2, **kwargs):
     # if we exit loop without success, raise the last error
     raise last_err
 
+
 def get_logs_with_retry(season, season_type, retries=5):
     """Get league/player game logs via playergamelogs.PlayerGameLogs with retries."""
     def _do():
@@ -111,11 +149,11 @@ def get_logs_with_retry(season, season_type, retries=5):
         ).get_data_frames()[0]
     return _call_with_retry(_do, retries=retries)
 
+
 def get_player_gamelogs_with_retry(player_id, retries=5):
     """If you ever need per-player calls, do them through this wrapper (not used by default)."""
     from nba_api.stats.endpoints import playergamelogs as _pg
     def _do():
-        # Example: instantiate endpoint for a player (if needed)
         return _pg.PlayerGameLogs(player_id_nullable=player_id).get_data_frames()[0]
     return _call_with_retry(_do, retries=retries)
 
