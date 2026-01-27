@@ -10,10 +10,20 @@ from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 from supabase import create_client
 from nba_api.stats.endpoints import leaguegamelog
-from nba_api.library.http import NBAStatsHTTP
+
+# Robustly import NBAStatsHTTP from possible locations
+NBAStatsHTTP = None
+try:
+    from nba_api.stats.library.http import NBAStatsHTTP
+except Exception:
+    try:
+        from nba_api.library.http import NBAStatsHTTP
+    except Exception:
+        NBAStatsHTTP = None
+        print("Warning: NBAStatsHTTP import failed; continuing without patching nba_api HTTP wrapper.")
 
 # Configure timeout and session similarly to players file
-NBAStatsHTTP.timeout = int(os.environ.get("NBA_TIMEOUT", "60"))
+NBA_TIMEOUT = int(os.environ.get("NBA_TIMEOUT", "60"))
 
 _default_headers = {
     "User-Agent": os.environ.get("NBA_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -26,13 +36,23 @@ _default_headers = {
     "Connection": "keep-alive",
 }
 
-_retry_strategy = Retry(
-    total=5,
-    backoff_factor=1,
-    status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=frozenset(["HEAD", "GET", "OPTIONS"]),
-    raise_on_status=False,
-)
+# Retry strategy (compat for different urllib3 versions)
+try:
+    _retry_strategy = Retry(
+        total=5,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=frozenset(["HEAD", "GET", "OPTIONS"]),
+        raise_on_status=False,
+    )
+except TypeError:
+    _retry_strategy = Retry(
+        total=5,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        method_whitelist=frozenset(["HEAD", "GET", "OPTIONS"]),
+        raise_on_status=False,
+    )
 
 _adapter = HTTPAdapter(max_retries=_retry_strategy)
 _session = requests.Session()
@@ -46,14 +66,26 @@ _proxy = (os.environ.get("NBA_PROXY") or
 if _proxy:
     _session.proxies.update({"http": _proxy, "https": _proxy})
 
-NBAStatsHTTP.session = _session
-NBAStatsHTTP.headers.update(_default_headers)
+if NBAStatsHTTP is not None:
+    try:
+        NBAStatsHTTP.timeout = NBA_TIMEOUT
+    except Exception:
+        pass
+    try:
+        NBAStatsHTTP.session = _session
+    except Exception:
+        pass
+    try:
+        NBAStatsHTTP.headers.update(_default_headers)
+    except Exception:
+        pass
+else:
+    print("NBAStatsHTTP not available — configured requests.Session only.")
 
 SEASON = os.environ.get("NBA_SEASON", "2025-26")
 SEASON_TYPE = os.environ.get("NBA_SEASON_TYPE", "Regular Season")
 PTS = [90, 95, 100, 105, 110, 115, 120, 125, 130]
 
-# Helpers (same as original)
 def alen(v, t):
     m = v < t
     return int(m.argmax()) if m.any() else int(len(v))
@@ -127,7 +159,8 @@ def main():
                     "streak_start": str(g.loc[so - 1, "GAME_DATE"].date()), "last_game": last,
                     "season_wins": w, "season_games": games, "season_win_pct": round((w / games) * 100, 3) if games else 0.0,
                     "streak_win_pct": 100.0, "last10_hits": a10, "last10_games": b10, "last10_hit_pct": c10,
-                    "last5_hits": a5, "last5_games": b5, "last5_hit_pct": c5, "updated_at": now
+                    "last5_hits": a5, "last5_games": b5,
+                    "last5_hit_pct": c5, "updated_at": now
                 })
 
         su = alen(-pts, -t)  # <= t
@@ -139,7 +172,8 @@ def main():
                 "streak_start": str(g.loc[su - 1, "GAME_DATE"].date()), "last_game": last,
                 "season_wins": w, "season_games": games, "season_win_pct": round((w / games) * 100, 3) if games else 0.0,
                 "streak_win_pct": 100.0, "last10_hits": a10, "last10_games": b10, "last10_hit_pct": c10,
-                "last5_hits": a5, "last5_games": b5, "last5_hit_pct": c5, "updated_at": now
+                "last5_hits": a5, "last5_games": b5,
+                "last5_hit_pct": c5, "updated_at": now
             })
 
     sb.table("streaks").delete().eq("sport", "NBA").eq("entity_type", "team").execute()
