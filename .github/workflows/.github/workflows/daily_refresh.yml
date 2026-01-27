@@ -1,0 +1,55 @@
+name: Daily Refresh
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Debug Python environment and refresh_players.py
+        run: |
+          echo "=== Top of refresh_players.py as seen by runner ==="
+          sed -n '1,120p' refresh_players.py || { echo "refresh_players.py not found at repo root"; true; }
+          echo
+          echo "=== pip show nba_api (may be empty) ==="
+          pip show nba_api || true
+          echo
+          echo "=== Python version and sys.path ==="
+          python - <<'PY'
+import sys, importlib, subprocess
+print('python:', sys.version)
+print('sys.path:', sys.path)
+for name in ('nba_api.stats.library.http', 'nba_api.library.http'):
+    try:
+        m = importlib.import_module(name)
+        print(f'OK import: {name} -> attrs: {[a for a in dir(m) if not a.startswith("_")][:80]}')
+    except Exception as e:
+        print(f'FAILED import: {name} -> {e}')
+print('--- pip freeze ---')
+subprocess.run(['pip','freeze'])
+PY
+
+      - name: Run Refresh Players
+        run: |
+          python refresh_players.py
+
+      - name: Run Refresh Teams
+        run: |
+          python refresh_teams.py
