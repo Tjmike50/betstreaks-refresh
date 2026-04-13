@@ -16,7 +16,6 @@ from supabase import create_client
 from nba_api.stats.endpoints import playergamelogs
 from nba_api.stats.static import players
 
-# Robustly import NBAStatsHTTP from possible locations
 NBAStatsHTTP = None
 try:
     from nba_api.stats.library.http import NBAStatsHTTP
@@ -25,9 +24,8 @@ except Exception:
         from nba_api.library.http import NBAStatsHTTP
     except Exception:
         NBAStatsHTTP = None
-        print("Warning: NBAStatsHTTP import failed; continuing without patching nba_api HTTP wrapper.")
+        print("Warning: NBAStatsHTTP import failed; continuing without patching nba_api HTTP wrapper.", flush=True)
 
-# --- NBA HTTP/session configuration
 NBA_TIMEOUT = int(os.environ.get("NBA_TIMEOUT", "180"))
 NBA_RETRIES = int(os.environ.get("NBA_RETRIES", "6"))
 NBA_BASE_WAIT = float(os.environ.get("NBA_BASE_WAIT", "3"))
@@ -46,7 +44,6 @@ _default_headers = {
     "Connection": "keep-alive",
 }
 
-# Retry strategy (compat for different urllib3 versions)
 try:
     _retry_strategy = Retry(
         total=5,
@@ -70,7 +67,6 @@ _session.mount("https://", _adapter)
 _session.mount("http://", _adapter)
 _session.headers.update(_default_headers)
 
-# Allow optional extra headers via env var NBA_EXTRA_HEADERS, format: "X-Foo:bar|X-Bar:baz"
 _extra = os.environ.get("NBA_EXTRA_HEADERS")
 if _extra:
     for pair in _extra.split("|"):
@@ -78,7 +74,6 @@ if _extra:
             k, v = pair.split(":", 1)
             _session.headers[k.strip()] = v.strip()
 
-# Optional proxy env var
 _proxy = (
     os.environ.get("NBA_PROXY")
     or os.environ.get("HTTPS_PROXY")
@@ -89,7 +84,6 @@ _proxy = (
 if _proxy:
     _session.proxies.update({"http": _proxy, "https": _proxy})
 
-# Monkeypatch nba_api HTTP wrapper to return our session and timeout (best-effort)
 for mod_name in ("nba_api.stats.library.http", "nba_api.library.http"):
     try:
         mod = importlib.import_module(mod_name)
@@ -108,7 +102,7 @@ for mod_name in ("nba_api.stats.library.http", "nba_api.library.http"):
             except Exception:
                 pass
     except Exception:
-        print(f"Could not monkeypatch {mod_name}, continuing.")
+        print(f"Could not monkeypatch {mod_name}, continuing.", flush=True)
 
 if NBAStatsHTTP is not None:
     try:
@@ -125,7 +119,6 @@ if NBAStatsHTTP is not None:
     except Exception:
         pass
 
-# --- App constants
 SEASON = os.environ.get("NBA_SEASON", "2025-26")
 SEASON_TYPE = os.environ.get("NBA_SEASON_TYPE", "Regular Season")
 RECENT_DAYS = int(os.environ.get("RECENT_DAYS", "14"))
@@ -133,7 +126,6 @@ MIN_STREAK = int(os.environ.get("MIN_STREAK", "2"))
 LOOKBACK = int(os.environ.get("LOOKBACK", "12"))
 STATS = {"PTS": "PTS", "AST": "AST", "REB": "REB", "3PM": "FG3M"}
 
-# --- Helpers
 def alen(v, t):
     m = v < t
     return int(m.argmax()) if m.any() else int(len(v))
@@ -145,7 +137,6 @@ def last_ge(v, t, n):
     return h, n, round((h / n) * 100, 3) if n else 0.0
 
 def _call_with_retry(func, *args, retries=NBA_RETRIES, base_wait=NBA_BASE_WAIT, **kwargs):
-    """Call func with retries, exponential backoff and jitter on timeout/connection errors."""
     last_err = None
     for attempt in range(1, retries + 1):
         try:
@@ -154,7 +145,7 @@ def _call_with_retry(func, *args, retries=NBA_RETRIES, base_wait=NBA_BASE_WAIT, 
         except (ReadTimeout, RequestsConnectionError, requests.exceptions.RequestException) as e:
             last_err = e
             wait = base_wait * (2 ** (attempt - 1)) + random.uniform(0, 2.0)
-            print(f"NBA request error: {e!r} — retry {attempt}/{retries} after {wait:.1f}s")
+            print(f"NBA request error: {e!r} — retry {attempt}/{retries} after {wait:.1f}s", flush=True)
             time.sleep(wait)
     raise last_err
 
@@ -173,10 +164,6 @@ def _build_common_kwargs(param_names):
     return kwargs
 
 def _try_playergamelogs_variants(season, season_type):
-    """
-    Try calling PlayerGameLogs with several keyword argument variants based on the
-    installed nba_api implementation. Explicitly pass timeout/headers/proxy when supported.
-    """
     ctor = playergamelogs.PlayerGameLogs
     sig = inspect.signature(ctor.__init__)
     pnames = set(sig.parameters.keys())
@@ -223,7 +210,7 @@ def _try_playergamelogs_variants(season, season_type):
     last_err = None
     for kw in candidates:
         try:
-            print(f"Trying PlayerGameLogs with kwargs keys: {sorted(kw.keys())}")
+            print(f"Trying PlayerGameLogs with kwargs keys: {sorted(kw.keys())}", flush=True)
             inst = ctor(**kw)
             dfs = inst.get_data_frames()
             if dfs and len(dfs[0]) > 0:
@@ -243,14 +230,19 @@ def get_logs_with_retry(season, season_type, retries=NBA_RETRIES):
         return _try_playergamelogs_variants(season, season_type)
     return _call_with_retry(_do, retries=retries)
 
-# --- Main logic
 def main():
+    print("refresh_players.py started", flush=True)
+    print(f"Season={SEASON} | SeasonType={SEASON_TYPE} | Timeout={NBA_TIMEOUT}", flush=True)
+    print("Creating Supabase client...", flush=True)
+
     sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
 
-    print(f"Starting refresh_players.py for season={SEASON}, season_type={SEASON_TYPE}, timeout={NBA_TIMEOUT}s")
+    print("Supabase client created", flush=True)
+    print("Fetching player game logs...", flush=True)
 
     lg = get_logs_with_retry(SEASON, SEASON_TYPE)
-    print(f"Fetched {len(lg)} player game log rows from nba_api")
+
+    print(f"Fetched {len(lg)} player game log rows from nba_api", flush=True)
 
     if lg.empty:
         raise RuntimeError("Player game logs came back empty; aborting to avoid wiping valid data.")
@@ -259,13 +251,13 @@ def main():
 
     act = {p["id"] for p in players.get_players() if p["is_active"]}
     lg = lg[lg["PLAYER_ID"].isin(act)].copy()
-    print(f"Rows after active-player filter: {len(lg)}")
+    print(f"Rows after active-player filter: {len(lg)}", flush=True)
 
     today = pd.Timestamp.now(tz=timezone.utc).tz_localize(None)
     last = lg.groupby("PLAYER_ID")["GAME_DATE"].max()
     keep = set(last[last >= today - pd.Timedelta(days=RECENT_DAYS)].index)
     lg = lg[lg["PLAYER_ID"].isin(keep)].copy()
-    print(f"Rows after recent-player filter: {len(lg)}")
+    print(f"Rows after recent-player filter: {len(lg)}", flush=True)
 
     if lg.empty:
         raise RuntimeError("No recent active player logs remained after filtering; aborting to avoid wiping valid data.")
@@ -275,11 +267,11 @@ def main():
 
     grouped = lg.groupby(["PLAYER_ID", "PLAYER_NAME"])
     total_players = len(grouped)
-    print(f"Building streak rows for {total_players} players")
+    print(f"Building streak rows for {total_players} players", flush=True)
 
     for idx, ((pid, pname), g) in enumerate(grouped, start=1):
         if idx % 25 == 0 or idx == total_players:
-            print(f"Processed {idx}/{total_players} players")
+            print(f"Processed {idx}/{total_players} players", flush=True)
 
         g = g.sort_values("GAME_DATE", ascending=False).reset_index(drop=True)
         team = g.loc[0, "TEAM_ABBREVIATION"]
@@ -328,17 +320,18 @@ def main():
 
     df = pd.DataFrame(res)
     rows = df.to_dict("records")
-    print(f"Generated {len(rows)} streak rows")
+    print(f"Generated {len(rows)} streak rows", flush=True)
 
+    print("Deleting existing NBA player streak rows...", flush=True)
     sb.table("streaks").delete().eq("sport", "NBA").eq("entity_type", "player").execute()
-    print("Deleted existing NBA player streak rows")
+    print("Deleted existing NBA player streak rows", flush=True)
 
     for i in range(0, len(rows), 500):
         chunk = rows[i:i + 500]
         sb.table("streaks").insert(chunk).execute()
-        print(f"Inserted rows {i + 1}-{i + len(chunk)}")
+        print(f"Inserted rows {i + 1}-{i + len(chunk)}", flush=True)
 
-    print("Players uploaded:", len(rows))
+    print("Players uploaded:", len(rows), flush=True)
 
 if __name__ == "__main__":
     main()
