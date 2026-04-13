@@ -22,16 +22,19 @@ jobs:
       - name: Refresh Players
         continue-on-error: true
         env:
+          PYTHONUNBUFFERED: "1"
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           NBA_TIMEOUT: "60"
           NBA_RETRIES: "2"
           NBA_BASE_WAIT: "2"
           REQUEST_PACING_SECONDS: "0.5"
-        run: python refresh_players.py
+        run: python -u refresh_players.py
 
       - name: Refresh Teams
         env:
+          PYTHONUNBUFFERED: "1"
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: python refresh_teams.py
+        run: python -u refresh_teams.py
+      
