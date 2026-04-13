@@ -4,7 +4,7 @@ import time
 import random
 import inspect
 import importlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import pandas as pd
 import requests
@@ -26,10 +26,19 @@ except Exception:
         NBAStatsHTTP = None
         print("Warning: NBAStatsHTTP import failed; continuing without patching nba_api HTTP wrapper.", flush=True)
 
-NBA_TIMEOUT = int(os.environ.get("NBA_TIMEOUT", "180"))
-NBA_RETRIES = int(os.environ.get("NBA_RETRIES", "6"))
-NBA_BASE_WAIT = float(os.environ.get("NBA_BASE_WAIT", "3"))
-REQUEST_PACING_SECONDS = float(os.environ.get("REQUEST_PACING_SECONDS", "1.0"))
+NBA_TIMEOUT = int(os.environ.get("NBA_TIMEOUT", "60"))
+NBA_RETRIES = int(os.environ.get("NBA_RETRIES", "2"))
+NBA_BASE_WAIT = float(os.environ.get("NBA_BASE_WAIT", "2"))
+REQUEST_PACING_SECONDS = float(os.environ.get("REQUEST_PACING_SECONDS", "0.5"))
+
+SEASON = os.environ.get("NBA_SEASON", "2025-26")
+SEASON_TYPE = os.environ.get("NBA_SEASON_TYPE", "Regular Season")
+RECENT_DAYS = int(os.environ.get("RECENT_DAYS", "21"))
+MIN_STREAK = int(os.environ.get("MIN_STREAK", "2"))
+LOOKBACK = int(os.environ.get("LOOKBACK", "12"))
+DATE_BUFFER_DAYS = int(os.environ.get("DATE_BUFFER_DAYS", "7"))
+
+STATS = {"PTS": "PTS", "AST": "AST", "REB": "REB", "3PM": "FG3M"}
 
 _default_headers = {
     "User-Agent": os.environ.get(
@@ -119,13 +128,6 @@ if NBAStatsHTTP is not None:
     except Exception:
         pass
 
-SEASON = os.environ.get("NBA_SEASON", "2025-26")
-SEASON_TYPE = os.environ.get("NBA_SEASON_TYPE", "Regular Season")
-RECENT_DAYS = int(os.environ.get("RECENT_DAYS", "14"))
-MIN_STREAK = int(os.environ.get("MIN_STREAK", "2"))
-LOOKBACK = int(os.environ.get("LOOKBACK", "12"))
-STATS = {"PTS": "PTS", "AST": "AST", "REB": "REB", "3PM": "FG3M"}
-
 def alen(v, t):
     m = v < t
     return int(m.argmax()) if m.any() else int(len(v))
@@ -163,15 +165,28 @@ def _build_common_kwargs(param_names):
 
     return kwargs
 
+def _recent_date_strings():
+    end_date = datetime.now(timezone.utc).date()
+    start_date = end_date - timedelta(days=RECENT_DAYS + DATE_BUFFER_DAYS)
+    return start_date.strftime("%m/%d/%Y"), end_date.strftime("%m/%d/%Y")
+
 def _try_playergamelogs_variants(season, season_type):
     ctor = playergamelogs.PlayerGameLogs
     sig = inspect.signature(ctor.__init__)
     pnames = set(sig.parameters.keys())
 
+    date_from, date_to = _recent_date_strings()
     common_kwargs = _build_common_kwargs(pnames)
     candidates = []
 
-    kwargs1 = dict(common_kwargs)
+    def add_date_filters(kw):
+        if "date_from_nullable" in pnames:
+            kw["date_from_nullable"] = date_from
+        if "date_to_nullable" in pnames:
+            kw["date_to_nullable"] = date_to
+        return kw
+
+    kwargs1 = add_date_filters(dict(common_kwargs))
     if "season" in pnames:
         kwargs1["season"] = season
     if "season_type_nullable" in pnames:
@@ -179,7 +194,7 @@ def _try_playergamelogs_variants(season, season_type):
     if kwargs1:
         candidates.append(kwargs1)
 
-    kwargs2 = dict(common_kwargs)
+    kwargs2 = add_date_filters(dict(common_kwargs))
     if "season_nullable" in pnames:
         kwargs2["season_nullable"] = season
     if "season_type_nullable" in pnames:
@@ -187,7 +202,7 @@ def _try_playergamelogs_variants(season, season_type):
     if kwargs2:
         candidates.append(kwargs2)
 
-    kwargs3 = dict(common_kwargs)
+    kwargs3 = add_date_filters(dict(common_kwargs))
     if "season" in pnames:
         kwargs3["season"] = season
     if "season_type_all_star" in pnames:
@@ -197,7 +212,7 @@ def _try_playergamelogs_variants(season, season_type):
     if kwargs3:
         candidates.append(kwargs3)
 
-    kwargs4 = dict(common_kwargs)
+    kwargs4 = add_date_filters(dict(common_kwargs))
     if "season_nullable" in pnames:
         kwargs4["season_nullable"] = season
     if "season_type_all_star" in pnames:
@@ -205,12 +220,11 @@ def _try_playergamelogs_variants(season, season_type):
     if kwargs4:
         candidates.append(kwargs4)
 
-    candidates.append(dict(common_kwargs))
-
     last_err = None
     for kw in candidates:
         try:
             print(f"Trying PlayerGameLogs with kwargs keys: {sorted(kw.keys())}", flush=True)
+            print(f"Using date window: {date_from} -> {date_to}", flush=True)
             inst = ctor(**kw)
             dfs = inst.get_data_frames()
             if dfs and len(dfs[0]) > 0:
@@ -238,7 +252,7 @@ def main():
     sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
 
     print("Supabase client created", flush=True)
-    print("Fetching player game logs...", flush=True)
+    print("Fetching recent player game logs...", flush=True)
 
     lg = get_logs_with_retry(SEASON, SEASON_TYPE)
 
@@ -254,8 +268,9 @@ def main():
     print(f"Rows after active-player filter: {len(lg)}", flush=True)
 
     today = pd.Timestamp.now(tz=timezone.utc).tz_localize(None)
+    keep_cutoff = today - pd.Timedelta(days=RECENT_DAYS)
     last = lg.groupby("PLAYER_ID")["GAME_DATE"].max()
-    keep = set(last[last >= today - pd.Timedelta(days=RECENT_DAYS)].index)
+    keep = set(last[last >= keep_cutoff].index)
     lg = lg[lg["PLAYER_ID"].isin(keep)].copy()
     print(f"Rows after recent-player filter: {len(lg)}", flush=True)
 
