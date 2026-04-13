@@ -1,21 +1,35 @@
 name: Daily Refresh
+
 on:
   schedule:
     - cron: "0 13 * * *"
   workflow_dispatch: {}
+
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
+        with:
+          python-version: "3.11"
+
       - run: pip install -r requirements.txt
+
       - name: Refresh Players
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NBA_TIMEOUT: "60"
+          NBA_RETRIES: "2"
+          NBA_BASE_WAIT: "2"
+          REQUEST_PACING_SECONDS: "0.5"
         run: python refresh_players.py
+
       - name: Refresh Teams
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
